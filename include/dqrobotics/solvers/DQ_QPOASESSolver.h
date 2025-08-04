@@ -1,5 +1,5 @@
 /**
-(C) Copyright 2022 DQ Robotics Developers
+(C) Copyright 2022-2023 DQ Robotics Developers
 
 This file is part of DQ Robotics.
 
@@ -17,7 +17,10 @@ This file is part of DQ Robotics.
     along with DQ Robotics.  If not, see <http://www.gnu.org/licenses/>.
 
 Contributors:
-- Murilo M. Marinho        (murilo@g.ecc.u-tokyo.ac.jp)
+- Murilo M. Marinho (murilo@g.ecc.u-tokyo.ac.jp)
+    - Responsible for the original implementation.
+- Quentin Lin (qlin1806@g.ecc.u-tokyo.ac.jp)
+    - Added support for equality constraints
 */
 #pragma once
 
@@ -42,6 +45,10 @@ namespace DQ_robotics
         //of working set recalculations actually performed!)
         //Page 14 of https://www.coin-or.org/qpOASES/doc/3.0/manual.pdf
         int_t maximum_working_set_recalculations_;
+
+        // Equality constraints are handled by means of appended inequality constraints within an equality tolerance threshold.  
+        // Initialized to DQ_threshold by default
+        double_t equality_constraints_tolerance_ = DQ_threshold;
 
         //Overload this method in a child class to change the configuration.
         virtual void _config_solver()
@@ -83,6 +90,24 @@ namespace DQ_robotics
 
         /**
          * @brief
+         *  Sets the tolerance for the equality constraints.
+         * @param equality_constraints_tolerance the tolerance for the equality constraints.
+         */
+        void set_equality_constraints_tolerance(const double &equality_constraints_tolerance) {
+            equality_constraints_tolerance_ = equality_constraints_tolerance;
+        }
+
+        /**
+         * @brief
+         *  Gets the tolerance for the equality constraints.
+         * @return the tolerance for the equality constraints.
+         */
+        double get_equality_constraints_tolerance() {
+            return equality_constraints_tolerance_;
+        }
+
+        /**
+         * @brief
          *   Solves the following quadratic program
          *   min(x)  0.5*x'Hx + f'x
          *   s.t.    Ax <= b
@@ -101,8 +126,6 @@ namespace DQ_robotics
             const int PROBLEM_SIZE = H.rows();
             const int INEQUALITY_CONSTRAINT_SIZE = b.size();
             const int EQUALITY_CONSTRAINT_SIZE = beq.size();
-            if(EQUALITY_CONSTRAINT_SIZE != 0)
-                throw std::runtime_error("DQ_QPOASESSolver::solve_quadratic_program(): Equality constraints are not implemented yet.");
 
             ///Check sizes
             //Objective function
@@ -119,22 +142,41 @@ namespace DQ_robotics
             if(beq.size()!=Aeq.rows())
                 throw std::runtime_error("DQ_QPOASESSolver::solve_quadratic_program(): size of beq="+std::to_string(beq.size())+" should be compatible with rows of Aeq="+std::to_string(Aeq.rows())+".");
 
+            //Append equality constraints to inequality constraints
+            auto A_extended = A;
+            auto ub_extended = b;
+            if(EQUALITY_CONSTRAINT_SIZE!=0 && INEQUALITY_CONSTRAINT_SIZE!=0)
+            {
+                A_extended.resize(INEQUALITY_CONSTRAINT_SIZE + EQUALITY_CONSTRAINT_SIZE*2, PROBLEM_SIZE);
+                A_extended << A, Aeq, -Aeq;
+                ub_extended.resize(INEQUALITY_CONSTRAINT_SIZE + EQUALITY_CONSTRAINT_SIZE*2);
+                ub_extended << b, beq + VectorXd::Constant(EQUALITY_CONSTRAINT_SIZE, equality_constraints_tolerance_),
+                               -beq + VectorXd::Constant(EQUALITY_CONSTRAINT_SIZE, equality_constraints_tolerance_);
+            } else if(EQUALITY_CONSTRAINT_SIZE!=0)
+            {
+                A_extended.resize(EQUALITY_CONSTRAINT_SIZE*2, PROBLEM_SIZE);
+                A_extended << Aeq, -Aeq;
+                ub_extended.resize(EQUALITY_CONSTRAINT_SIZE*2);
+                ub_extended << beq + VectorXd::Constant(EQUALITY_CONSTRAINT_SIZE, equality_constraints_tolerance_),
+                               -beq + VectorXd::Constant(EQUALITY_CONSTRAINT_SIZE, equality_constraints_tolerance_);
+            }
+
             std::vector<double> H_std_vec(H.data(), H.data() + H.rows() * H.cols());
             real_t* H_vec = &H_std_vec[0];
 
-            MatrixXd AT = A.transpose();
+            MatrixXd AT = A_extended.transpose();
             std::vector<double> A_std_vec(AT.data(), AT.data() + AT.rows() * AT.cols());
             real_t* A_vec = &A_std_vec[0];
 
             auto g_std_vec = _vectorxd_to_std_vector_double(f);
             real_t* g_vec = &g_std_vec[0];
 
-            auto b_std_vec = _vectorxd_to_std_vector_double(b);
-            real_t* ubA_vec = &b_std_vec[0];
+            auto ub_std_vec = _vectorxd_to_std_vector_double(ub_extended);
+            real_t *ubA_vec = &ub_std_vec[0];
 
             if(qpoases_solve_first_time_)
             {
-                qpoases_problem_ = SQProblem( PROBLEM_SIZE,INEQUALITY_CONSTRAINT_SIZE, HST_POSDEF );
+                qpoases_problem_ = SQProblem(PROBLEM_SIZE, INEQUALITY_CONSTRAINT_SIZE + EQUALITY_CONSTRAINT_SIZE*2, HST_POSDEF);
                 _config_solver();
                 auto maximum_working_set_recalculations_local = maximum_working_set_recalculations_; //qpOASES changes the value, so we make a local copy
                 auto problem_init_return = qpoases_problem_.init( H_vec,g_vec,A_vec,NULL,NULL,NULL,ubA_vec, maximum_working_set_recalculations_local );
