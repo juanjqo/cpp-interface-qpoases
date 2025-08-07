@@ -1,6 +1,6 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.5...3.26)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.22...3.26)
 PROJECT(dqrobotics-interface-qpoases)
-set (CMAKE_CXX_STANDARD 11)
+set (CMAKE_CXX_STANDARD 17)
 
 ################################################################
 # INSTALL HEADERS
